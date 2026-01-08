@@ -146,44 +146,46 @@ render(struct jab_output *output)
 			&(pixman_rectangle16_t){0, 0, output->width, output->height});
 
 	/* draw image if specified */
-	if (image_mode == ModeFill || image_mode == ModeFit) {
-		sx = (double)(output->width) / image.width;
-		sy = (double)(output->height) / image.height;
-		s = image_mode == ModeFill ? fmax(sx, sy) : fmin(sx, sy);
+	if (image.pix) {
+		if (image_mode == ModeFill || image_mode == ModeFit) {
+			sx = (double)(output->width) / image.width;
+			sy = (double)(output->height) / image.height;
+			s = image_mode == ModeFill ? fmax(sx, sy) : fmin(sx, sy);
 
-		pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s),
-				pixman_double_to_fixed(1 / s));
-		pixman_transform_translate(&t, NULL,
-				pixman_int_to_fixed((image.width - output->width / s) / 2),
-				pixman_int_to_fixed((image.height - output->height / s) / 2));
-		pixman_image_set_transform(image.pix, &t);
-		if (!nearest_neighbor)
-			pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
+			pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s),
+					pixman_double_to_fixed(1 / s));
+			pixman_transform_translate(&t, NULL,
+					pixman_int_to_fixed((image.width - output->width / s) / 2),
+					pixman_int_to_fixed((image.height - output->height / s) / 2));
+			pixman_image_set_transform(image.pix, &t);
+			if (!nearest_neighbor)
+				pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
 
-		pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0, 0,
-				output->width, output->height);
-	} else if (image_mode == ModeStretch) {
-		pixman_transform_init_scale(&t,
-				pixman_double_to_fixed(1 / ((double)(output->width) / image.width)),
-				pixman_double_to_fixed(1 / ((double)(output->height) / image.height)));
-		pixman_image_set_transform(image.pix, &t);
-		if (!nearest_neighbor)
-			pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
+			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
+					0, output->width, output->height);
+		} else if (image_mode == ModeStretch) {
+			pixman_transform_init_scale(&t,
+					pixman_double_to_fixed(1 / ((double)(output->width) / image.width)),
+					pixman_double_to_fixed(1 / ((double)(output->height) / image.height)));
+			pixman_image_set_transform(image.pix, &t);
+			if (!nearest_neighbor)
+				pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
 
-		pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0, 0,
-				output->width, output->height);
-	} else if (image_mode == ModeCenter) {
-		pixman_transform_init_translate(&t, pixman_int_to_fixed(image.width - output->width / 2),
-				pixman_int_to_fixed(image.height - output->height / 2));
-		pixman_image_set_transform(image.pix, &t);
+			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
+					0, output->width, output->height);
+		} else if (image_mode == ModeCenter) {
+			pixman_transform_init_translate(&t, pixman_int_to_fixed(image.width - output->width / 2),
+					pixman_int_to_fixed(image.height - output->height / 2));
+			pixman_image_set_transform(image.pix, &t);
 
-		pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0, 0,
-				output->width, output->height);
-	} else if (image_mode == ModeTile)
-		for (int y = 0; y < output->height; y += image.height)
-			for (int x = 0; x < output->width; x += image.width)
-				pixman_image_composite32(PIXMAN_OP_SRC, image.pix, NULL, buffer->image, 0, 0, 0, 0,
-						x, y, image.width, image.height);
+			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
+					0, output->width, output->height);
+		} else if (image_mode == ModeTile)
+			for (int y = 0; y < output->height; y += image.height)
+				for (int x = 0; x < output->width; x += image.width)
+					pixman_image_composite32(PIXMAN_OP_SRC, image.pix, NULL, buffer->image, 0, 0,
+							0, 0, x, y, image.width, image.height);
+	}
 
 	wl_surface_set_buffer_scale(output->surface, output->scale);
 	wl_surface_attach(output->surface, buffer->wl_buffer, 0, 0);
