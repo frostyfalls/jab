@@ -5,11 +5,11 @@
 #include <string.h>
 
 #include <pixman.h>
-#include <tllist.h>
 #include <wayland-client.h>
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
-#include "wlr-layer-shell-unstable-v1-client-protocol.h"
+#include "tllist/tllist.h"
+#include "wlr-layer-shell-unstable-v1-protocol.h"
 
 #include "buffer.h"
 
@@ -51,7 +51,7 @@ static char *image_path = NULL;
 static int image_mode = ModeInvalid;
 static bool nearest_neighbor = false;
 
-static const char usage[] = "usage: jab [-hVn] [-c color] [-i image_path] [-m mode] [-o output]\n";
+static const char usage[] = "usage: jab [-hVn] [-c COLOR] [-i IMAGE_PATH] [-m MODE] [-o OUTPUT]\n";
 
 static void
 noop()
