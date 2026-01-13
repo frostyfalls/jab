@@ -1,4 +1,3 @@
-#include <ctype.h>
 #include <getopt.h>
 #include <stdbool.h>
 #include <stdio.h>
@@ -6,6 +5,10 @@
 
 #include <pixman.h>
 #include <wayland-client.h>
+#define STBI_ONLY_JPEG
+#define STBI_ONLY_PNG
+#define STBI_ONLY_BMP
+#define STBI_ONLY_GIF
 #define STB_IMAGE_IMPLEMENTATION
 #include "stb_image.h"
 #include "tllist/tllist.h"
@@ -18,21 +21,36 @@
 enum { ModeFill, ModeFit, ModeStretch, ModeCenter, ModeTile, ModeInvalid }; /* image mode */
 
 struct jab_image {
-	int width;
-	int height;
-	int channels;
+	int width, height, channels;
+	unsigned char *data;
+	pixman_image_t *image;
 	pixman_format_code_t format;
-	pixman_image_t *pix;
+};
+
+struct jab_config {
+	pixman_image_t *image;
+	pixman_color_t color;
+	int mode;
+	bool pixel_perfect;
+	char *identifier;
+	char *image_path;
+
+	/* internal */
+	pixman_format_code_t format;
 };
 
 struct jab_output {
 	struct wl_output *wl_output;
 	uint32_t wl_name;
-	char *make, *model;
+
+	char *name, *identifier;
 	int scale, width, height;
+
+	struct jab_config *config;
+
+	bool configured;
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
-	bool configured;
 };
 
 /* application state */
@@ -41,17 +59,20 @@ static struct wl_registry *registry;
 static struct wl_compositor *compositor;
 static struct wl_shm *shm;
 static struct zwlr_layer_shell_v1 *layer_shell;
-static tll(struct jab_output *) outputs;
 static bool running;
-static struct jab_image image = {0};
+static tll(struct jab_config *) configs;
+static tll(struct jab_output *) outputs;
 
-/* config */
-static uint32_t color = 0x000000FF;
-static char *image_path = NULL;
-static int image_mode = ModeInvalid;
-static bool nearest_neighbor = false;
+/* main config all outputs inherit from */
+static struct jab_config main_config = {
+	.image = NULL,
+	.color = (pixman_color_t){0, 0, 0, 65535},
+	.mode = ModeInvalid,
+	.pixel_perfect = false,
+	.identifier = "",
+};
 
-static const char usage[] = "usage: jab [-hVn] [-c COLOR] [-i IMAGE_PATH] [-m MODE] [-o OUTPUT]\n";
+static const char usage[] = "usage: jab [-hVn] [-c color] [-i image] [-m mode] [-o output]\n";
 
 static void
 noop()
@@ -59,139 +80,104 @@ noop()
 	/* this space intentionally left blank */
 }
 
-/* thank you sewn for drwl */
-static inline pixman_color_t
-convert_color(const uint32_t color)
+static struct jab_config *
+create_config(void)
 {
-	return (pixman_color_t){
-		((color >> 24) & 0xFF) * 0x101 * (color & 0xFF) / 0xFF,
-		((color >> 16) & 0xFF) * 0x101 * (color & 0xFF) / 0xFF,
-		((color >> 8) & 0xFF) * 0x101 * (color & 0xFF) / 0xFF,
-		(color & 0xFF) * 0x101
-	};
+	struct jab_config *config = malloc(sizeof(struct jab_config));
+	if (!config)
+		return NULL;
+	memcpy(config, &main_config, sizeof(struct jab_config));
+	return config;
 }
 
 static bool
-parse_color(const char *color, uint32_t *result)
+parse_color(const char *color, pixman_color_t *result)
 {
-	int len, i;
-
-	if (color[0] == '#')
-		color++;
-
-	len = strlen(color);
-	if (len != 6)
+	int count, r, g, b;
+	count = sscanf(color, "%02x%02x%02x", &r, &g, &b);
+	if (count != 3)
 		return false;
-	for (i = 0; i < len; i++)
-		if (!isxdigit(color[i]))
-			return false;
-
-	uint32_t val = strtoul(color, NULL, 16);
-	*result = (val << 8) | 0xFF;
+	result->red = (double)r * 0xffff / 0xff;
+	result->green = (double)g * 0xffff / 0xff;
+	result->blue = (double)b * 0xffff / 0xff;
 	return true;
 }
 
-static bool
-parse_mode(const char *mode, int *result)
+static int
+parse_mode(const char *mode)
 {
 	if (!strcmp(mode, "fill"))
-		*result = ModeFill;
+		return ModeFill;
 	else if (!strcmp(mode, "fit"))
-		*result = ModeFit;
+		return ModeFit;
 	else if (!strcmp(mode, "stretch"))
-		*result = ModeStretch;
+		return ModeStretch;
 	else if (!strcmp(mode, "center"))
-		*result = ModeCenter;
+		return ModeCenter;
 	else if (!strcmp(mode, "tile"))
-		*result = ModeTile;
-	else
-		return false;
-	return true;
-}
-
-static void
-destroy_layer_output(struct jab_output *output)
-{
-	if (output->layer_surface)
-		zwlr_layer_surface_v1_destroy(output->layer_surface);
-	if (output->surface)
-		wl_surface_destroy(output->surface);
-	output->configured = false;
-}
-
-static void
-destroy_output(struct jab_output *output)
-{
-	destroy_layer_output(output);
-	wl_output_release(output->wl_output);
-	free(output->make);
-	free(output->model);
-	free(output);
+		return ModeTile;
+	return ModeInvalid;
 }
 
 static void
 render(struct jab_output *output)
 {
-	struct jab_buffer *buffer;
-	pixman_color_t pix_color = convert_color(color);
+	struct jab_config *config = output->config;
+	int image_width, image_height;
+	struct jab_buffer *buffer = create_buffer(shm, output->width, output->height);
 	double sx, sy, s;
 	pixman_transform_t t;
 
-	buffer = create_buffer(shm, output->width, output->height);
-	buffer->image = pixman_image_create_bits_no_clear(PIXMAN_x8r8g8b8, output->width,
-			output->height, buffer->data, output->width * 4);
-
-	/* draw selected bg color */
-	pixman_image_fill_rectangles(PIXMAN_OP_SRC, buffer->image, &pix_color, 1,
+	/* draw color */
+	pixman_image_fill_rectangles(PIXMAN_OP_SRC, buffer->image, &config->color, 1,
 			&(pixman_rectangle16_t){0, 0, output->width, output->height});
 
 	/* draw image if specified */
-	if (image.pix) {
-		if (image_mode == ModeFill || image_mode == ModeFit) {
-			sx = (double)(output->width) / image.width;
-			sy = (double)(output->height) / image.height;
-			s = image_mode == ModeFill ? fmax(sx, sy) : fmin(sx, sy);
+	if (config->image) {
+		image_width = pixman_image_get_width(config->image);
+		image_height = pixman_image_get_height(config->image);
+		if (config->mode == ModeFill || config->mode == ModeFit) {
+			sx = (double)(output->width) / image_width;
+			sy = (double)(output->height) / image_height;
+			s = config->mode == ModeFill ? fmax(sx, sy) : fmin(sx, sy);
 
 			pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s),
 					pixman_double_to_fixed(1 / s));
 			pixman_transform_translate(&t, NULL,
-					pixman_int_to_fixed((image.width - output->width / s) / 2),
-					pixman_int_to_fixed((image.height - output->height / s) / 2));
-			pixman_image_set_transform(image.pix, &t);
-			if (!nearest_neighbor)
-				pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
-
-			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
-					0, output->width, output->height);
-		} else if (image_mode == ModeStretch) {
+					pixman_int_to_fixed((image_width - output->width / s) / 2),
+					pixman_int_to_fixed((image_height - output->height / s) / 2));
+			pixman_image_set_transform(config->image, &t);
+			if (!config->pixel_perfect)
+				pixman_image_set_filter(config->image, PIXMAN_FILTER_BEST, NULL, 0);
+			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
+					0, 0, 0, 0, 0, output->width, output->height);
+		} else if (config->mode == ModeStretch) {
 			pixman_transform_init_scale(&t,
-					pixman_double_to_fixed(1 / ((double)(output->width) / image.width)),
-					pixman_double_to_fixed(1 / ((double)(output->height) / image.height)));
-			pixman_image_set_transform(image.pix, &t);
-			if (!nearest_neighbor)
-				pixman_image_set_filter(image.pix, PIXMAN_FILTER_BEST, NULL, 0);
-
-			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
-					0, output->width, output->height);
-		} else if (image_mode == ModeCenter) {
-			pixman_transform_init_translate(&t, pixman_int_to_fixed(image.width - output->width / 2),
-					pixman_int_to_fixed(image.height - output->height / 2));
-			pixman_image_set_transform(image.pix, &t);
-
-			pixman_image_composite32(PIXMAN_OP_OVER, image.pix, NULL, buffer->image, 0, 0, 0, 0, 0,
-					0, output->width, output->height);
-		} else if (image_mode == ModeTile)
-			for (int y = 0; y < output->height; y += image.height)
-				for (int x = 0; x < output->width; x += image.width)
-					pixman_image_composite32(PIXMAN_OP_SRC, image.pix, NULL, buffer->image, 0, 0,
-							0, 0, x, y, image.width, image.height);
+					pixman_double_to_fixed(1 / ((double)(output->width) / image_width)),
+					pixman_double_to_fixed(1 / ((double)(output->height) / image_height)));
+			pixman_image_set_transform(config->image, &t);
+			if (!config->pixel_perfect)
+				pixman_image_set_filter(config->image, PIXMAN_FILTER_BEST, NULL, 0);
+			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
+					0, 0, 0, 0, 0, output->width, output->height);
+		} else if (config->mode == ModeCenter) {
+			pixman_transform_init_translate(&t,
+					pixman_int_to_fixed((image_width - output->width) / 2),
+					pixman_int_to_fixed((image_height - output->height) / 2));
+			pixman_image_set_transform(config->image, &t);
+			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
+					0, 0, 0, 0, 0, output->width, output->height);
+		} else if (config->mode == ModeTile)
+			for (int y = 0; y < output->height; y += image_height)
+				for (int x = 0; x < output->width; x += image_width)
+					pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
+							0, 0, 0, x, y, image_width, image_height);
 	}
 
 	wl_surface_set_buffer_scale(output->surface, output->scale);
 	wl_surface_attach(output->surface, buffer->wl_buffer, 0, 0);
 	wl_surface_damage(output->surface, 0, 0, UINT32_MAX, UINT32_MAX);
 	wl_surface_commit(output->surface);
-
 	destroy_buffer(buffer);
 }
 
@@ -215,6 +201,27 @@ layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface,
 }
 
 static void
+destroy_layer_output(struct jab_output *output)
+{
+	if (output->layer_surface)
+		zwlr_layer_surface_v1_destroy(output->layer_surface);
+	if (output->surface)
+		wl_surface_destroy(output->surface);
+	output->configured = false;
+}
+
+static void
+destroy_config(struct jab_config *config)
+{
+	if (config->image) {
+		pixman_image_unref(config->image);
+		stbi_image_free(pixman_image_get_data(config->image));
+	}
+	free(config->image_path);
+	free(config->identifier);
+}
+
+static void
 layer_surface_closed(void *data, struct zwlr_layer_surface_v1 *layer_surface)
 {
 	struct jab_output *output = data;
@@ -227,8 +234,8 @@ layer_surface_closed(void *data, struct zwlr_layer_surface_v1 *layer_surface)
 }
 
 static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
-    .configure = &layer_surface_configure,
-    .closed = &layer_surface_closed,
+    .configure = layer_surface_configure,
+    .closed = layer_surface_closed,
 };
 
 static void
@@ -259,31 +266,20 @@ add_surface_to_output(struct jab_output *output)
 }
 
 static void
-output_geometry(void *data, struct wl_output *wl_output, int x, int y, int physical_width,
-		int physical_height, int subpixel, const char *make, const char *model, int transform)
-{
-	struct jab_output *output = data;
-	free(output->make);
-	free(output->model);
-	output->make = make != NULL ? strdup(make) : NULL;
-	output->model = model != NULL ? strdup(model) : NULL;
-}
-
-static void
-output_mode(void *data, struct wl_output *wl_output, uint32_t flags, int width, int height,
-		int refresh)
-{
-	struct jab_output *output = data;
-	output->width = width;
-	output->height = height;
-}
-
-static void
 output_done(void *data, struct wl_output *wl_output)
 {
 	struct jab_output *output = data;
-	fprintf(stderr, "output: %s %s (%dx%d, scale=%d)\n", output->make, output->model,
-			output->width, output->height, output->scale);
+	struct jab_config *config;
+	fprintf(stderr, "output: %s (%s)\n", output->name, output->identifier);
+	output->config = &main_config;
+	tll_foreach(configs, it) {
+		config = it->item;
+		if (!strcmp(output->name, config->identifier) ||
+				!strcmp(output->identifier, config->identifier)) {
+			output->config = config;
+			break;
+		}
+	}
 }
 
 static void
@@ -295,11 +291,33 @@ output_scale(void *data, struct wl_output *wl_output, int factor)
 		render(output);
 }
 
+static void
+output_name(void *data, struct wl_output *wl_output, const char *name)
+{
+	struct jab_output *output = data;
+	free(output->name);
+	output->name = strdup(name);
+}
+
+static void
+output_description(void *data, struct wl_output *wl_output, const char *description)
+{
+	struct jab_output *output = data;
+	char buf[256], *identifier;
+	strcpy(buf, description);
+	identifier = strtok(buf, "(");
+	identifier[strlen(identifier) - 1] = '\0';
+	free(output->identifier);
+	output->identifier = strdup(identifier);
+}
+
 static const struct wl_output_listener output_listener = {
-	.geometry = output_geometry,
-	.mode = output_mode,
+	.geometry = noop,
+	.mode = noop,
 	.done = output_done,
 	.scale = output_scale,
+	.name = output_name,
+	.description = output_description,
 };
 
 static void
@@ -319,16 +337,36 @@ registry_global(void *data, struct wl_registry *registry, uint32_t name, const c
 
 	else if (strcmp(interface, wl_output_interface.name) == 0) {
 		output = calloc(1, sizeof(struct jab_output));
-		output->wl_output = wl_registry_bind(registry, name, &wl_output_interface, 3);
+		output->wl_output = wl_registry_bind(registry, name, &wl_output_interface, 4);
 		tll_push_back(outputs, output);
 		wl_output_add_listener(output->wl_output, &output_listener, output);
 		add_surface_to_output(output);
 	}
 }
 
+static void
+destroy_output(struct jab_output *output)
+{
+	destroy_layer_output(output);
+	wl_output_release(output->wl_output);
+	free(output->name);
+	free(output->identifier);
+	free(output);
+}
+
+static void
+registry_global_remove(void *data, struct wl_registry *registry, uint32_t name)
+{
+	tll_foreach(outputs, it)
+		if (it->item->wl_name == name) {
+			destroy_output(it->item);
+			break;
+		}
+}
+
 static const struct wl_registry_listener registry_listener = {
 	.global = registry_global,
-	.global_remove = noop,
+	.global_remove = registry_global_remove,
 };
 
 /* TODO: optimize or figure out why this works? */
@@ -342,66 +380,70 @@ stride_for_format_and_width(pixman_format_code_t format, const int width)
 int
 main(int argc, char *argv[])
 {
-	int ret = EXIT_FAILURE;
-	char c;
-	unsigned char *stb_image = NULL;
-
+	int ret, c;
+	struct jab_config *config = &main_config;
+	pixman_color_t color;
 	opterr = 0;
-	while ((c = getopt(argc, argv, "hVnc:i:m:o:")) != -1)
+
+	while ((c = getopt(argc, argv, "hVpc:i:m:o:")) != -1)
 		switch (c) {
-		case 'h':
-			fputs(usage, stderr);
-			return EXIT_SUCCESS;
-		case 'V':
-			fputs("jab v"VERSION"\n", stderr);
-			return EXIT_SUCCESS;
-		case 'n':
-			nearest_neighbor = true;
-			break;
-		case 'c':
-			if (!parse_color(optarg, &color)) {
-				WARN("invalid color: %s", optarg);
-				return EXIT_FAILURE;
-			}
-			break;
-		case 'i':
-			/* TODO: do more checks for a valid file? */
-			image_path = optarg;
-			break;
-		case 'm':
-			if (!parse_mode(optarg, &image_mode)) {
-				WARN("invalid mode: %s", optarg);
-				return EXIT_FAILURE;
-			}
-			break;
-		case 'o':
-			WARN("TODO");
-			return EXIT_FAILURE;
-		case '?':
-			if (optopt == 'c' || optopt == 'i' || optopt == 'm' || optopt == 'o')
-				WARN("option requires argument: -%c", optopt);
-			else
-				WARN("unknown option: -%c", optopt);
-			fputs(usage, stderr);
-			/* fallthrough */
-		default:
-			return EXIT_FAILURE;
+			case 'h':
+				fputs(usage, stderr);
+				exit(EXIT_SUCCESS);
+			case 'V':
+				fputs("jab v"VERSION"\n", stderr);
+				exit(EXIT_SUCCESS);
+			case 'p':
+				config->pixel_perfect = true;
+				break;
+			case 'c':
+				if (!parse_color(optarg, &color))
+					exit(EXIT_FAILURE);
+				config->color = color;
+				break;
+			case 'i':
+				config->image_path = strdup(optarg);
+				break;
+			case 'm':
+				config->mode = parse_mode(optarg);
+				if (config->mode == ModeInvalid)
+					exit(EXIT_FAILURE);
+				break;
+			case 'o':
+				config = create_config();
+				if (!config)
+					exit(EXIT_FAILURE);
+				config->identifier = strdup(optarg);
+				tll_push_back(configs, config);
+				break;
+			case '?':
+				if (optopt == 'c' || optopt == 'i' || optopt == 'm' || optopt == 'o')
+					WARN("option requires argument: -%c", optopt);
+				else
+					WARN("unknown option: -%c", optopt);
+				fputs(usage, stderr);
+				/* fallthrough */
+			default:
+				exit(EXIT_FAILURE);
 		}
 
-	if (image_path && image_mode == ModeInvalid) {
-		WARN("no mode specified");
-		goto finish;
-	}
+	tll_push_back(configs, &main_config);
+	tll_foreach(configs, it) {
+		struct jab_config *config = it->item;
+		if (config->image_path) {
+			pixman_format_code_t format;
+			int width, height, channels;
+			const unsigned char *buf = stbi_load(config->image_path, &width, &height, &channels, 4);
 
-	if (image_path) {
-		stb_image = stbi_load(image_path, &image.width, &image.height, &image.channels, 0);
-		if (!stb_image) {
-			WARN("failed to read image");
-			goto finish;
+			if (buf) {
+				format = channels == 4 ? PIXMAN_a8b8g8r8 : PIXMAN_b8g8r8;
+				format = PIXMAN_a8b8g8r8;
+				config->image = pixman_image_create_bits_no_clear(format, width, height,
+						(uint32_t *)buf, stride_for_format_and_width(format, width));
+			} else {
+				fprintf(stderr, "failed to read image\n");
+			}
 		}
-		image.format = image.channels == 4 ? PIXMAN_a8b8g8r8 : PIXMAN_b8g8r8;
-		image.pix = pixman_image_create_bits_no_clear(image.format, image.width, image.height,
-				(uint32_t *)stb_image, stride_for_format_and_width(image.format, image.width));
 	}
 
 	display = wl_display_connect(NULL);
@@ -418,20 +460,14 @@ main(int argc, char *argv[])
 		WARN("unsupported compositor");
 		goto finish;
 	}
-	if (!tll_length(outputs)) {
-		WARN("no outputs");
-		goto finish;
-	}
 
 	ret = EXIT_SUCCESS;
 	running = true;
-	while (running && wl_display_dispatch(display) != -1);
+	while (running && wl_display_dispatch(display) != -1) {
+	}
 
 finish:
-	if (image.pix)
-		pixman_image_unref(image.pix);
-	if (stb_image)
-		stbi_image_free(stb_image);
+	tll_free_and_free(configs, destroy_config);
 	tll_free_and_free(outputs, destroy_output);
 	if (layer_shell)
 		zwlr_layer_shell_v1_destroy(layer_shell);
@@ -443,6 +479,5 @@ finish:
 		wl_registry_destroy(registry);
 	if (display)
 		wl_display_disconnect(display);
-
 	return ret;
 }

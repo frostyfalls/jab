@@ -2,9 +2,10 @@
 
 VERSION = 0.1.0
 
+RM = rm -f
 PKG_CONFIG = pkg-config
-WAYLAND_PROTOCOLS = /usr/share/wayland-protocols
-WAYLAND_SCANNER = wayland-scanner
+WAYLAND_PROTOCOLS = `$(PKG_CONFIG) --variable=pkgdatadir wayland-protocols`
+WAYLAND_SCANNER = `$(PKG_CONFIG) --variable=wayland_scanner wayland-scanner`
 
 PKGS = pixman-1 wayland-client
 INCS = `$(PKG_CONFIG) --cflags $(PKGS)`
@@ -12,6 +13,7 @@ LIBS = `$(PKG_CONFIG) --libs $(PKGS)`
 
 CPPFLAGS = -D_POSIX_C_SOURCE=200809L -DVERSION=\"$(VERSION)\"
 CFLAGS = -std=c99 -Wall -Wno-deprecated-declarations -O3 $(INCS) $(CPPFLAGS)
+#CFLAGS = -g -std=c99 -Wall -Wno-deprecated-declarations -O0 $(INCS) $(CPPFLAGS)
 LDFLAGS = $(LIBS)
 
 PROTO = wlr-layer-shell-unstable-v1-protocol.h xdg-shell-protocol.h

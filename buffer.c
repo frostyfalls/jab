@@ -1,6 +1,7 @@
 #include <errno.h>
-#include <stdlib.h>
 #include <fcntl.h>
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <time.h>
 #include <unistd.h>
@@ -81,35 +82,35 @@ create_buffer(struct wl_shm *shm, int width, int height)
 	const int stride = width * 4;
 	const int size = height * stride * 2;
 	const int offset = height * stride * index;
-	struct jab_buffer *buffer;
-	struct wl_buffer *wl_buffer;
-	struct wl_shm_pool *pool;
-	int fd;
-	void *data;
 
-	fd = allocate_shm_file(size);
+	int fd = allocate_shm_file(size);
 	if (fd == -1)
 		return NULL;
 
-	data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+	void *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
 	if (data == MAP_FAILED) {
 		close(fd);
 		return NULL;
 	}
 
-	pool = wl_shm_create_pool(shm, fd, size);
-	wl_buffer = wl_shm_pool_create_buffer(pool, offset, width, height, stride,
+	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
+	struct wl_buffer *wl_buffer = wl_shm_pool_create_buffer(pool, offset, width, height, stride,
 			WL_SHM_FORMAT_XRGB8888);
 	wl_shm_pool_destroy(pool);
 	close(fd);
 
-	buffer = calloc(1, sizeof(struct jab_buffer));
+	struct jab_buffer *buffer = calloc(1, sizeof(struct jab_buffer));
+
+	pixman_image_t *image = pixman_image_create_bits_no_clear(PIXMAN_x8r8g8b8, width,
+			height, data, stride);
+
 	buffer->wl_buffer = wl_buffer;
 	buffer->size = size;
 	buffer->data = data;
-	buffer->stride = stride;
+	buffer->image = image;
 
 	wl_buffer_add_listener(buffer->wl_buffer, &buffer_listener, buffer);
+
 	return buffer;
 }
 
