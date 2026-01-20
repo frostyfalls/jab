@@ -136,7 +136,9 @@ render(struct jab_output *output)
 	if (config->image) {
 		image_width = pixman_image_get_width(config->image);
 		image_height = pixman_image_get_height(config->image);
-		if (config->mode == ModeFill || config->mode == ModeFit) {
+		switch (config->mode) {
+		case ModeFill:
+		case ModeFit:
 			sx = (double)(output->width) / image_width;
 			sy = (double)(output->height) / image_height;
 			s = config->mode == ModeFill ? fmax(sx, sy) : fmin(sx, sy);
@@ -146,32 +148,44 @@ render(struct jab_output *output)
 			pixman_transform_translate(&t, NULL,
 					pixman_int_to_fixed((image_width - output->width / s) / 2),
 					pixman_int_to_fixed((image_height - output->height / s) / 2));
+
 			pixman_image_set_transform(config->image, &t);
 			if (!config->pixel_perfect)
 				pixman_image_set_filter(config->image, PIXMAN_FILTER_BEST, NULL, 0);
+
 			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
 					0, 0, 0, 0, 0, output->width, output->height);
-		} else if (config->mode == ModeStretch) {
+
+			break;
+		case ModeStretch:
 			pixman_transform_init_scale(&t,
 					pixman_double_to_fixed(1 / ((double)(output->width) / image_width)),
 					pixman_double_to_fixed(1 / ((double)(output->height) / image_height)));
+
 			pixman_image_set_transform(config->image, &t);
 			if (!config->pixel_perfect)
 				pixman_image_set_filter(config->image, PIXMAN_FILTER_BEST, NULL, 0);
 			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
 					0, 0, 0, 0, 0, output->width, output->height);
-		} else if (config->mode == ModeCenter) {
+
+			break;
+		case ModeCenter:
 			pixman_transform_init_translate(&t,
 					pixman_int_to_fixed((image_width - output->width) / 2),
 					pixman_int_to_fixed((image_height - output->height) / 2));
+
 			pixman_image_set_transform(config->image, &t);
 			pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
 					0, 0, 0, 0, 0, output->width, output->height);
-		} else if (config->mode == ModeTile)
+
+			break;
+		case ModeTile:
 			for (int y = 0; y < output->height; y += image_height)
 				for (int x = 0; x < output->width; x += image_width)
 					pixman_image_composite32(PIXMAN_OP_OVER, config->image, NULL, buffer->image, 0,
 							0, 0, 0, x, y, image_width, image_height);
+			break;
+		}
 	}
 
 	wl_surface_set_buffer_scale(output->surface, output->scale);
