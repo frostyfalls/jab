@@ -258,8 +258,13 @@ add_surface_to_output(struct jab_output *output)
 	struct wl_surface *surface;
 	struct wl_region *region;
 	struct zwlr_layer_surface_v1 *layer_surface;
+	struct wl_region *input_region;
 
 	surface = wl_compositor_create_surface(compositor);
+
+	input_region = wl_compositor_create_region(compositor);
+	wl_surface_set_input_region(surface, input_region);
+	wl_region_destroy(input_region);
 
 	region = wl_compositor_create_region(compositor);
 	wl_surface_set_opaque_region(surface, region);

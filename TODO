@@ -1,0 +1,4 @@
+Don't slurp input (clicking on desktop for labwc)
+Optimize scaling images (tested with resizing a nested compositor)
+Prettify logging and be less verbose when an output is done
+General cleanup (perhaps split main() into separate functions)
