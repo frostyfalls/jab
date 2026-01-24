@@ -1,7 +1,7 @@
 include config.mk
 
 PROTO = wlr-layer-shell-unstable-v1-protocol.h xdg-shell-protocol.h
-SRC = jab.c buffer.c $(PROTO:.h=.c)
+SRC = jab.c buffer.c image-mode.c $(PROTO:.h=.c)
 OBJ = $(SRC:.c=.o)
 
 all: jab
@@ -25,4 +25,10 @@ xdg-shell-protocol.c:
 clean:
 	rm -f jab $(OBJ) $(PROTO) $(PROTO:.h=.c)
 
-.PHONY: all clean
+install:
+	install -Dm0755 jab $(DESTDIR)$(PREFIX)/bin
+
+uninstall:
+	rm -f $(DESTDIR)$(PREFIX)/bin/jab
+
+.PHONY: all clean install uninstall
