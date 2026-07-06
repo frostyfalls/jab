@@ -61,7 +61,7 @@ static void die(const char *fmt, ...) {
 }
 
 static void usage(int ret) {
-	fprintf(stderr, "usage: waywallpaper [-p] [-c color] [-i image] [-m mode]\n");
+	fprintf(stderr, "usage: waywallpaper [-pV] [-c color] [-i image] [-m mode]\n");
 	exit(ret);
 }
 
@@ -244,6 +244,8 @@ static pixman_image_t *load_image(FILE *file) {
 }
 
 static void render(struct state *state, struct output *output) {
+	pixman_image_t *output_image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
+	pixman_image_fill_rectangles(PIXMAN_OP_SRC, output_image, &state->color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
 	if (state->image) {
 		switch (state->display_mode) {
 			case MODE_FILL:
@@ -333,6 +335,8 @@ int main(int argc, char **argv) {
 			else
 				die("invalid mode: %s", mode);
 		} break;
+		default:
+			usage(1);
 	} OPTEND;
 
 	// TODO: don't duplicate checks?
