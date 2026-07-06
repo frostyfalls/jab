@@ -22,6 +22,7 @@ wayland_scanner = find_program(dependency('wayland-scanner').get_variable('wayla
 pixman = dependency('pixman-1')
 libpng = dependency('libpng', required: get_option('png'))
 libjpeg = dependency('libjpeg', required: get_option('jpeg'))
+libwebp = dependency('libwebp', required: get_option('webp'))
 
 protocols_src = []
 foreach protocol : [
@@ -51,6 +52,10 @@ if libjpeg.found()
   add_project_arguments('-DWW_HAVE_JPEG', language: 'c')
   formats_src += ['jpeg.c']
 endif
+if libjpeg.found()
+  add_project_arguments('-DWW_HAVE_WEBP', language: 'c')
+  formats_src += ['webp.c']
+endif
 
 executable(
   'waywallpaper',
@@ -72,6 +77,7 @@ summary(
   {
     'PNG support': libpng.found(),
     'JPEG support': libjpeg.found(),
+    'WEBP support': libwebp.found(),
   },
   bool_yn: true,
 )

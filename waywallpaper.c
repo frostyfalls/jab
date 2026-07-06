@@ -1,6 +1,5 @@
 // SPDX-License-Identifier: MIT
-//
-// TODO: do platform checks for e.g. <sys/...>
+
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,6 +13,24 @@
 
 #include "opt.h"
 #include "waywallpaper.h"
+
+#ifdef WW_HAVE_PNG
+bool have_png = true;
+#else
+bool have_png = false;
+#endif  // WW_HAVE_PNG
+
+#ifdef WW_HAVE_JPEG
+bool have_jpeg = true;
+#else
+bool have_jpeg = false;
+#endif  // WW_HAVE_JPEG
+
+#ifdef WW_HAVE_WEBP
+bool have_webp = true;
+#else
+bool have_webp = false;
+#endif  // WW_HAVE_WEBP
 
 enum display_mode {
 	MODE_INVALID = 0,
@@ -239,6 +256,14 @@ static pixman_image_t *load_image(FILE *file) {
 	if ((image = load_png(file)))
 		return image;
 #endif  // WW_HAVE_PNG
+#ifdef WW_HAVE_JPEG
+	if ((image = load_jpeg(file)))
+		return image;
+#endif  // WW_HAVE_PNG
+#ifdef WW_HAVE_WEBP
+	if ((image = load_webp(file)))
+		return image;
+#endif  // WW_HAVE_WEBP
 	(void)file;
 	return image;
 }
@@ -282,19 +307,11 @@ int main(int argc, char **argv) {
 		case 'V':
 			fprintf(
 				stderr,
-				"waywallpaper v" WW_VERSION " ["
-#ifdef WW_HAVE_PNG
-				"+"
-#else
-				"-"
-#endif  // WW_HAVE_PNG
-				"png "
-#ifdef WW_HAVE_JPEG
-				"+"
-#else
-				"-"
-#endif  // WW_HAVE_JPEG
-				"jpeg]\n"
+				"waywallpaper v%s [%cpng %cjpeg %cwebp]\n",
+				WW_VERSION,
+				have_png ? '+' : '-',
+				have_jpeg ? '+' : '-',
+				have_webp ? '+' : '-'
 			);
 			exit(EXIT_SUCCESS);
 			break;

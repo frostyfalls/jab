@@ -10,21 +10,27 @@
 
 #include "waywallpaper.h"
 
+#define PNG_SIGNATURE_LEN 8
+
 pixman_image_t *load_png(FILE *file) {
-	// TODO: error checks
+	// TODO: error checks for malformed files or pixman_image_create failing somehow
 	fseek(file, 0, SEEK_SET);
 
-	uint8_t sig[8];
-	fread(sig, 1, 8, file);
-	if (!png_check_sig(sig, 8))
+	uint8_t sig[PNG_SIGNATURE_LEN];
+	if (fread(sig, 1, PNG_SIGNATURE_LEN, file) != PNG_SIGNATURE_LEN)
+		return NULL;
+	if (!png_check_sig(sig, PNG_SIGNATURE_LEN))
 		return NULL;
 
 	png_structp png = png_create_read_struct(PNG_LIBPNG_VER_STRING, NULL, NULL, NULL);
 	png_infop info = png_create_info_struct(png);
-	setjmp(png_jmpbuf(png));
+	if (setjmp(png_jmpbuf(png))) {
+		png_destroy_read_struct(&png, &info, NULL);
+		return NULL;
+	}
 
 	png_init_io(png, file);
-	png_set_sig_bytes(png, 8);
+	png_set_sig_bytes(png, PNG_SIGNATURE_LEN);
 	png_read_info(png, info);
 	png_set_bgr(png);
 
