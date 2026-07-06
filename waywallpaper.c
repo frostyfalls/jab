@@ -9,9 +9,6 @@
 #include <unistd.h>
 
 #include <pixman.h>
-#ifdef WW_HAVE_PNG
-#include <png.h>
-#endif  // WW_HAVE_PNG
 #include <wayland-client.h>
 #include <wlr-layer-shell-unstable-v1.h>
 
@@ -19,7 +16,7 @@
 #include "waywallpaper.h"
 
 enum display_mode {
-	MODE_INVALID = 0,  // default for solid color, otherwise error
+	MODE_INVALID = 0,
 	MODE_FILL,
 	MODE_FIT,
 	MODE_STRETCH,
@@ -34,11 +31,11 @@ struct state {
 	struct wl_shm *shm;
 	struct zwlr_layer_shell_v1 *layer_shell;
 	struct wl_list outputs;  // struct output::link
-	pixman_color_t color;  // -c option
-	enum display_mode display_mode;  // -m option
-	bool pixel_perfect;  // -p option
-	FILE *image_file;  // -i option
+	FILE *image_file;
 	pixman_image_t *image;
+	pixman_color_t color;
+	enum display_mode display_mode;
+	bool pixel_perfect;
 };
 
 struct output {
@@ -46,10 +43,10 @@ struct output {
 	struct wl_output *wl_output;
 	uint32_t wl_name;
 	char *name, *description;
-	uint32_t width, height;  // buffer size, not actual dimensions
+	uint32_t width, height;
 	struct wl_surface *surface;
 	struct zwlr_layer_surface_v1 *layer_surface;
-	bool dirty;  // image needs to be redrawn
+	bool dirty;
 	struct wl_list link;
 };
 
@@ -69,7 +66,35 @@ static void usage(int ret) {
 }
 
 static void noop() {
-	// welcome to barrow
+	// Welcome to Barrow
+}
+
+static void set_mode_fill_fit(pixman_image_t *image, uint32_t width, uint32_t height, bool fill) {
+	uint32_t src_width = pixman_image_get_width(image);
+	uint32_t src_height = pixman_image_get_height(image);
+	double sx = (double)width / src_width;
+	double sy = (double)height / src_height;
+	double s = fill ? fmax(sx, sy) : fmin(sx, sy);
+	pixman_transform_t t;
+	pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s), pixman_double_to_fixed(1 / s));
+	pixman_transform_translate(&t, NULL, pixman_double_to_fixed((src_width - width / s) / 2), pixman_double_to_fixed((src_height - height / s) / 2));
+	pixman_image_set_transform(image, &t);
+}
+
+static void set_mode_stretch(pixman_image_t *image, uint32_t width, uint32_t height) {
+	(void)image;
+	(void)width;
+	(void)height;
+}
+
+static void set_mode_center(pixman_image_t *image, uint32_t width, uint32_t height) {
+	(void)image;
+	(void)width;
+	(void)height;
+}
+
+static void set_mode_tile(pixman_image_t *image) {
+	pixman_image_set_repeat(image, PIXMAN_REPEAT_NORMAL);
 }
 
 static void layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface, uint32_t serial, uint32_t width, uint32_t height) {
@@ -96,7 +121,6 @@ static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 static void output_create_surface(struct output *output) {
 	output->surface = wl_compositor_create_surface(output->state->compositor);
 
-	/* passthrough input */
 	struct wl_region *input_region = wl_compositor_create_region(output->state->compositor);
 	wl_surface_set_input_region(output->surface, input_region);
 	wl_region_destroy(input_region);
@@ -219,9 +243,39 @@ static pixman_image_t *load_image(FILE *file) {
 	return image;
 }
 
+static void render(struct state *state, struct output *output) {
+	if (state->image) {
+		switch (state->display_mode) {
+			case MODE_FILL:
+				set_mode_fill_fit(state->image, output->width, output->height, true);
+				break;
+			case MODE_FIT:
+				set_mode_fill_fit(state->image, output->width, output->height, false);
+				break;
+			case MODE_STRETCH:
+				set_mode_stretch(state->image, output->width, output->height);
+				break;
+			case MODE_CENTER:
+				set_mode_center(state->image, output->width, output->height);
+				break;
+			case MODE_TILE:
+				set_mode_tile(state->image);
+				break;
+			case MODE_INVALID:
+				abort();  // unreachable
+		}
+		if (!state->pixel_perfect)
+			pixman_image_set_filter(state->image, PIXMAN_FILTER_BEST, NULL, 0);
+		pixman_image_composite32(PIXMAN_OP_OVER, state->image, NULL, output_image, 0, 0, 0, 0, 0, 0, output->width, output->height);
+	}
+	wl_surface_commit(output->surface);
+	pixman_image_unref(output_image);
+}
+
 int main(int argc, char **argv) {
 	struct state state = {0};
 
+	// TODO: move any of this to separate functions to tidy up main()?
 	OPTBEGIN(argc, argv) {
 		case 'V':
 			fprintf(
@@ -280,7 +334,11 @@ int main(int argc, char **argv) {
 				die("invalid mode: %s", mode);
 		} break;
 	} OPTEND;
-	if (!state.image_file)
+
+	// TODO: don't duplicate checks?
+	if (state.display_mode != MODE_INVALID && !state.image)
+		usage(1);
+	else if (state.display_mode == MODE_INVALID && state.image)
 		usage(1);
 
 	wl_list_init(&state.outputs);
@@ -299,42 +357,12 @@ int main(int argc, char **argv) {
 		wl_list_for_each(output, &state.outputs, link) {
 			if (output->dirty) {
 				output->dirty = false;
-				pixman_image_t *output_image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
-				pixman_image_fill_rectangles(PIXMAN_OP_SRC, output_image, &state.color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
-				if (state.image) {
-					switch (state.display_mode) {
-						case MODE_FILL:
-						case MODE_FIT: {
-							uint32_t src_width = pixman_image_get_width(state.image), src_height = pixman_image_get_height(state.image);
-							double sx = (double)output->width / src_width;
-							double sy = (double)output->height / src_height;
-							double s = state.display_mode == MODE_FILL ? fmax(sx, sy) : fmin(sx, sy);
-							pixman_transform_t t;
-							pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s), pixman_double_to_fixed(1 / s));
-							pixman_transform_translate(&t, NULL, pixman_double_to_fixed((src_width - output->width / s) / 2), pixman_double_to_fixed((src_height - output->height / s) / 2));
-							pixman_image_set_transform(state.image, &t);
-						} break;
-						case MODE_STRETCH:
-						case MODE_CENTER:
-							break;
-						case MODE_TILE:
-							pixman_image_set_repeat(state.image, PIXMAN_REPEAT_NORMAL);
-							break;
-						case MODE_INVALID:
-							abort();  // unreachable
-					}
-					if (!state.pixel_perfect)
-						pixman_image_set_filter(state.image, PIXMAN_FILTER_BEST, NULL, 0);
-					pixman_image_composite32(PIXMAN_OP_OVER, state.image, NULL, output_image, 0, 0, 0, 0, 0, 0, output->width, output->height);
-				}
-				wl_surface_commit(output->surface);
-				pixman_image_unref(output_image);
+				render(&state, output);
 			}
 		}
 	}
 
 	// TODO: remove outputs
-
 	// if (state.image)
 	// 	pixman_image_unref(state.image);
 	// if (state.image_file)
