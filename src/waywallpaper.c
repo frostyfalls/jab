@@ -11,26 +11,25 @@
 #include <wayland-client.h>
 #include <wlr-layer-shell-unstable-v1.h>
 
-#include "opt.h"
 #include "waywallpaper.h"
 
 #ifdef WW_HAVE_PNG
 bool have_png = true;
 #else
 bool have_png = false;
-#endif  // WW_HAVE_PNG
+#endif // WW_HAVE_PNG
 
 #ifdef WW_HAVE_JPEG
 bool have_jpeg = true;
 #else
 bool have_jpeg = false;
-#endif  // WW_HAVE_JPEG
+#endif // WW_HAVE_JPEG
 
 #ifdef WW_HAVE_WEBP
 bool have_webp = true;
 #else
 bool have_webp = false;
-#endif  // WW_HAVE_WEBP
+#endif // WW_HAVE_WEBP
 
 enum display_mode {
 	MODE_INVALID = 0,
@@ -47,7 +46,7 @@ struct state {
 	struct wl_compositor *compositor;
 	struct wl_shm *shm;
 	struct zwlr_layer_shell_v1 *layer_shell;
-	struct wl_list outputs;  // struct output::link
+	struct wl_list outputs; // struct output::link
 	FILE *image_file;
 	pixman_image_t *image;
 	pixman_color_t color;
@@ -67,7 +66,7 @@ struct output {
 	struct wl_list link;
 };
 
-static void die(const char *fmt, ...) {
+__attribute__ ((noreturn)) static void die(const char *fmt, ...) {
 	va_list ap;
 	fprintf(stderr, "waywallpaper: ");
 	va_start(ap, fmt);
@@ -77,7 +76,7 @@ static void die(const char *fmt, ...) {
 	exit(EXIT_FAILURE);
 }
 
-static void usage(int ret) {
+__attribute__ ((noreturn)) static void usage(int ret) {
 	fprintf(stderr, "usage: waywallpaper [-pV] [-c color] [-i image] [-m mode]\n");
 	exit(ret);
 }
@@ -99,19 +98,87 @@ static void set_mode_fill_fit(pixman_image_t *image, uint32_t width, uint32_t he
 }
 
 static void set_mode_stretch(pixman_image_t *image, uint32_t width, uint32_t height) {
-	(void)image;
-	(void)width;
-	(void)height;
+	uint32_t src_width = pixman_image_get_width(image);
+	uint32_t src_height = pixman_image_get_height(image);
+	double sx = (double)width / src_width;
+	double sy = (double)height / src_height;
+	pixman_transform_t t;
+	pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / sx), pixman_double_to_fixed(1 / sy));
+	pixman_image_set_transform(image, &t);
 }
 
 static void set_mode_center(pixman_image_t *image, uint32_t width, uint32_t height) {
-	(void)image;
-	(void)width;
-	(void)height;
+	uint32_t src_width = pixman_image_get_width(image);
+	uint32_t src_height = pixman_image_get_height(image);
+	pixman_transform_t t;
+	pixman_transform_init_translate(&t, pixman_int_to_fixed((src_width - width) / 2), pixman_int_to_fixed((src_height - height) / 2));
+	pixman_image_set_transform(image, &t);
 }
 
 static void set_mode_tile(pixman_image_t *image) {
 	pixman_image_set_repeat(image, PIXMAN_REPEAT_NORMAL);
+}
+
+static void wl_buffer_release(void *data, struct wl_buffer *wl_buffer) {
+	(void)data;
+	wl_buffer_destroy(wl_buffer);
+}
+
+static const struct wl_buffer_listener buffer_listener = {
+	.release = wl_buffer_release,
+};
+
+// TODO(frosty): Handle errors accordingly
+static pixman_image_t *create_surface_image(struct wl_shm *shm, struct wl_surface *surface, uint32_t width, uint32_t height) {
+	const uint32_t stride = width * 4;
+	const uint32_t size = height * stride;
+
+	int fd = allocate_shm_file(size);
+	uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+
+	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
+	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_XRGB8888);
+	wl_shm_pool_destroy(pool);
+	close(fd);
+
+	wl_buffer_add_listener(buffer, &buffer_listener, NULL);
+	wl_surface_attach(surface, buffer, 0, 0);
+
+	pixman_image_t *image = pixman_image_create_bits_no_clear(PIXMAN_x8r8g8b8, width, height, data, stride);
+	pixman_image_set_destroy_function(image, unmap_pixman_image, NULL);
+
+	return image;
+}
+
+static void render(struct state *state, struct output *output) {
+	pixman_image_t *image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
+	pixman_image_fill_rectangles(PIXMAN_OP_SRC, image, &state->color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
+	if (state->image) {
+		switch (state->display_mode) {
+		case MODE_FILL:
+			set_mode_fill_fit(state->image, output->width, output->height, true);
+			break;
+		case MODE_FIT:
+			set_mode_fill_fit(state->image, output->width, output->height, false);
+			break;
+		case MODE_STRETCH:
+			set_mode_stretch(state->image, output->width, output->height);
+			break;
+		case MODE_CENTER:
+			set_mode_center(state->image, output->width, output->height);
+			break;
+		case MODE_TILE:
+			set_mode_tile(state->image);
+			break;
+		case MODE_INVALID:
+			UNREACHABLE();
+		}
+		if (!state->pixel_perfect)
+			pixman_image_set_filter(state->image, PIXMAN_FILTER_BEST, NULL, 0);
+		pixman_image_composite32(PIXMAN_OP_OVER, state->image, NULL, image, 0, 0, 0, 0, 0, 0, output->width, output->height);
+	}
+	wl_surface_commit(output->surface);
+	pixman_image_unref(image);
 }
 
 static void layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *layer_surface, uint32_t serial, uint32_t width, uint32_t height) {
@@ -127,11 +194,13 @@ static void layer_surface_configure(void *data, struct zwlr_layer_surface_v1 *la
 	output->height = height;
 	output->dirty = true;
 	zwlr_layer_surface_v1_ack_configure(output->layer_surface, serial);
+
+	render(output->state, output);
 }
 
+// XXX(frosty): Should we handle layer_surface_closed?
 static const struct zwlr_layer_surface_v1_listener layer_surface_listener = {
 	.configure = layer_surface_configure,
-	// TODO: kill memory
 	.closed = noop,
 };
 
@@ -152,7 +221,6 @@ static void output_create_surface(struct output *output) {
 
 static void output_done(void *data, struct wl_output *wl_output) {
 	(void)wl_output;
-
 	struct output *output = data;
 
 	fprintf(stderr, "%s", output->name);
@@ -160,7 +228,7 @@ static void output_done(void *data, struct wl_output *wl_output) {
 		fprintf(stderr, " [%s]", output->description);
 	fputc('\n', stderr);
 
-	if (!output->surface)
+	if (output->surface == NULL)
 		output_create_surface(output);
 }
 
@@ -202,160 +270,102 @@ static void registry_global(void *data, struct wl_registry *registry, uint32_t n
 	} else if (strcmp(interface, zwlr_layer_shell_v1_interface.name) == 0) {
 		state->layer_shell = wl_registry_bind(registry, name, &zwlr_layer_shell_v1_interface, 2);
 	} else if (strcmp(interface, wl_output_interface.name) == 0) {
-		// TODO: create output_init()
-		struct wl_output *wl_output = wl_registry_bind(registry, name, &wl_output_interface, 4);
 		struct output *output = calloc(1, sizeof(*output));
-		output->state = state;
-		output->wl_output = wl_output;
+		output->wl_output = wl_registry_bind(registry, name, &wl_output_interface, 4);
 		output->wl_name = name;
+		output->state = state;
 		wl_output_add_listener(output->wl_output, &output_listener, output);
 		wl_list_insert(&state->outputs, &output->link);
 	}
 }
 
+static void registry_global_remove(void *data, struct wl_registry *registry, uint32_t name) {
+	(void)registry;
+	struct state *state = data;
+	struct output *output, *tmp;
+	wl_list_for_each_safe(output, tmp, &state->outputs, link) {
+		if (output->wl_name == name) {
+			wl_list_remove(&output->link);
+			zwlr_layer_surface_v1_destroy(output->layer_surface);
+			wl_surface_destroy(output->surface);
+			wl_output_release(output->wl_output);
+			free(output->name);
+			free(output->description);
+			free(output);
+		}
+	}
+}
+
 static const struct wl_registry_listener registry_listener = {
 	.global = registry_global,
-	// TODO: handle removing outputs
-	.global_remove = noop,
+	.global_remove = registry_global_remove,
 };
-
-static void wl_buffer_release(void *data, struct wl_buffer *wl_buffer) {
-	(void)data;
-	wl_buffer_destroy(wl_buffer);
-}
-
-static const struct wl_buffer_listener buffer_listener = {
-	.release = wl_buffer_release,
-};
-
-static pixman_image_t *create_surface_image(struct wl_shm *shm, struct wl_surface *surface, uint32_t width, uint32_t height) {
-	const uint32_t stride = width * 4;
-	const uint32_t size = height * stride;
-
-	// TODO: error checks (fd != -1; data != MAP_FAILED; image != NULL)
-	int fd = allocate_shm_file(size);
-	uint32_t *data = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-
-	struct wl_shm_pool *pool = wl_shm_create_pool(shm, fd, size);
-	struct wl_buffer *buffer = wl_shm_pool_create_buffer(pool, 0, width, height, stride, WL_SHM_FORMAT_XRGB8888);
-	wl_shm_pool_destroy(pool);
-	close(fd);
-
-	wl_buffer_add_listener(buffer, &buffer_listener, NULL);
-	wl_surface_attach(surface, buffer, 0, 0);
-
-	pixman_image_t *image = pixman_image_create_bits_no_clear(PIXMAN_x8r8g8b8, width, height, data, stride);
-	pixman_image_set_destroy_function(image, unmap_pixman_image, NULL);
-
-	return image;
-}
 
 static pixman_image_t *load_image(FILE *file) {
 	pixman_image_t *image = NULL;
 #ifdef WW_HAVE_PNG
 	if ((image = load_png(file)))
 		return image;
-#endif  // WW_HAVE_PNG
+#endif // WW_HAVE_PNG
 #ifdef WW_HAVE_JPEG
 	if ((image = load_jpeg(file)))
 		return image;
-#endif  // WW_HAVE_PNG
+#endif // WW_HAVE_PNG
 #ifdef WW_HAVE_WEBP
 	if ((image = load_webp(file)))
 		return image;
-#endif  // WW_HAVE_WEBP
+#endif // WW_HAVE_WEBP
 	(void)file;
 	return image;
-}
-
-static void render(struct state *state, struct output *output) {
-	pixman_image_t *output_image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
-	pixman_image_fill_rectangles(PIXMAN_OP_SRC, output_image, &state->color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
-	if (state->image) {
-		switch (state->display_mode) {
-			case MODE_FILL:
-				set_mode_fill_fit(state->image, output->width, output->height, true);
-				break;
-			case MODE_FIT:
-				set_mode_fill_fit(state->image, output->width, output->height, false);
-				break;
-			case MODE_STRETCH:
-				set_mode_stretch(state->image, output->width, output->height);
-				break;
-			case MODE_CENTER:
-				set_mode_center(state->image, output->width, output->height);
-				break;
-			case MODE_TILE:
-				set_mode_tile(state->image);
-				break;
-			case MODE_INVALID:
-				abort();  // unreachable
-		}
-		if (!state->pixel_perfect)
-			pixman_image_set_filter(state->image, PIXMAN_FILTER_BEST, NULL, 0);
-		pixman_image_composite32(PIXMAN_OP_OVER, state->image, NULL, output_image, 0, 0, 0, 0, 0, 0, output->width, output->height);
-	}
-	wl_surface_commit(output->surface);
-	pixman_image_unref(output_image);
 }
 
 int main(int argc, char **argv) {
 	struct state state = {0};
 
-	// TODO: move any of this to separate functions to tidy up main()?
-	OPTBEGIN(argc, argv) {
+	int opt;
+	while ((opt = getopt(argc, argv, "Vpc:i:m:")) != -1) {
+		switch (opt) {
 		case 'V':
-			fprintf(
-				stderr,
-				"waywallpaper v%s [%cpng %cjpeg %cwebp]\n",
-				WW_VERSION,
-				have_png ? '+' : '-',
-				have_jpeg ? '+' : '-',
-				have_webp ? '+' : '-'
-			);
+			fprintf(stderr, "waywallpaper v%s [%cpng %cjpeg %cwebp]\n",
+				WW_VERSION, have_png ? '+' : '-', have_jpeg ? '+' : '-', have_webp ? '+' : '-');
 			exit(EXIT_SUCCESS);
-			break;
 		case 'p':
 			state.pixel_perfect = true;
 			break;
 		case 'c': {
-			const char *color = OPTARG;
-			uint32_t r = 0, g = 0, b = 0;
-			if (sscanf(color, "%02x%02x%02x", &r, &g, &b) != 3)
-				die("invalid color: %s", color);
+			uint32_t r, g, b;
+			if (sscanf(optarg, "%02x%02x%02x", &r, &g, &b) != 3)
+				die("invalid color: %s", optarg);
 			state.color.red = (double)r * 0xffff / 0xff;
 			state.color.green = (double)g * 0xffff / 0xff;
 			state.color.blue = (double)b * 0xffff / 0xff;
 		} break;
 		case 'i': {
-			// TODO: better error messages
-			const char *image_path = OPTARG;
-			state.image_file = fopen(image_path, "rb");
+			state.image_file = fopen(optarg, "rb");
 			if (!state.image_file)
-				die("failed to load image: %s", image_path);
+				die("failed to open image: %s", optarg);
 			state.image = load_image(state.image_file);
 			if (!state.image)
-				die("failed to load image: %s", image_path);
+				die("failed to load image: %s", optarg);
 		} break;
 		case 'm': {
-			const char *mode = OPTARG;
-			if (strcmp(mode, "fill") == 0)
+			if (strcmp(optarg, "fill") == 0)
 				state.display_mode = MODE_FILL;
-			else if (strcmp(mode, "fit") == 0)
+			else if (strcmp(optarg, "fit") == 0)
 				state.display_mode = MODE_FIT;
-			else if (strcmp(mode, "stretch") == 0)
+			else if (strcmp(optarg, "stretch") == 0)
 				state.display_mode = MODE_STRETCH;
-			else if (strcmp(mode, "center") == 0)
+			else if (strcmp(optarg, "center") == 0)
 				state.display_mode = MODE_CENTER;
-			else if (strcmp(mode, "tile") == 0)
+			else if (strcmp(optarg, "tile") == 0)
 				state.display_mode = MODE_TILE;
 			else
-				die("invalid mode: %s", mode);
+				die("invalid mode: %s", optarg);
 		} break;
 		default:
 			usage(1);
-	} OPTEND;
-
+		}
+	}
 	if ((state.display_mode != MODE_INVALID) != !!state.image)
 		usage(1);
 
@@ -369,32 +379,9 @@ int main(int argc, char **argv) {
 	if (!(state.compositor && state.shm && state.layer_shell))
 		die("unsupported compositor");
 
-	while (wl_display_dispatch(state.display) != -1) {
-		wl_display_flush(state.display);
-		struct output *output;
-		wl_list_for_each(output, &state.outputs, link) {
-			if (output->dirty) {
-				output->dirty = false;
-				render(&state, output);
-			}
-		}
-	}
+	while (wl_display_dispatch(state.display) != -1)
+		;
 
-	// TODO: remove outputs
-	// if (state.image)
-	// 	pixman_image_unref(state.image);
-	// if (state.image_file)
-	// 	fclose(state.image_file);
-	// if (state.layer_shell)
-	// 	zwlr_layer_shell_v1_destroy(state.layer_shell);
-	// if (state.shm)
-	// 	wl_shm_destroy(state.shm);
-	// if (state.compositor)
-	// 	wl_compositor_destroy(state.compositor);
-	// if (state.registry)
-	// 	wl_registry_destroy(state.registry);
-	// if (state.display)
-	// 	wl_display_disconnect(state.display);
-
+	// XXX(frosty): Should we handle signals to cleanup resources when exiting?
 	return EXIT_SUCCESS;
 }
