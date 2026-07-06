@@ -61,13 +61,12 @@ if libjpeg.found()
   dependencies += libwebp
 endif
 
-include = include_directories('include')
-
 executable(
   'waywallpaper',
   sources: sources,
   dependencies: dependencies,
-  include_directories: include,
+  include_directories: 'include',
+  install: true,
 )
 
 summary(
