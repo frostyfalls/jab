@@ -24,18 +24,20 @@ libpng = dependency('libpng', required: get_option('png'))
 libjpeg = dependency('libjpeg', required: get_option('jpeg'))
 libwebp = dependency('libwebp', required: get_option('webp'))
 
-protocols_src = []
+sources = ['src/waywallpaper.c', 'src/shm.c']
+dependencies = [wayland_client, pixman]
+
 foreach protocol : [
-  'wlr-layer-shell-unstable-v1.xml',
+  'external/wlr-layer-shell-unstable-v1.xml',
   wayland_protocols + '/stable/xdg-shell/xdg-shell.xml',
 ]
-  protocols_src += custom_target(
+  sources += custom_target(
     protocol.underscorify() + '-client-header',
     output: '@BASENAME@.h',
     input: protocol,
     command: [wayland_scanner, 'client-header', '@INPUT@', '@OUTPUT@'],
   )
-  protocols_src += custom_target(
+  sources += custom_target(
     protocol.underscorify() + '-private-code',
     output: '@BASENAME@.c',
     input: protocol,
@@ -43,34 +45,29 @@ foreach protocol : [
   )
 endforeach
 
-formats_src = []
 if libpng.found()
   add_project_arguments('-DWW_HAVE_PNG', language: 'c')
-  formats_src += ['png.c']
+  sources += 'src/png.c'
+  dependencies += libpng
 endif
 if libjpeg.found()
   add_project_arguments('-DWW_HAVE_JPEG', language: 'c')
-  formats_src += ['jpeg.c']
+  sources += 'src/jpeg.c'
+  dependencies += libjpeg
 endif
 if libjpeg.found()
   add_project_arguments('-DWW_HAVE_WEBP', language: 'c')
-  formats_src += ['webp.c']
+  sources += 'src/webp.c'
+  dependencies += libwebp
 endif
+
+include = include_directories('include')
 
 executable(
   'waywallpaper',
-  [
-    'waywallpaper.c',
-    'shm.c',
-    protocols_src,
-    formats_src,
-  ],
-  dependencies: [
-    wayland_client,
-    pixman,
-    libpng,
-    libjpeg,
-  ],
+  sources: sources,
+  dependencies: dependencies,
+  include_directories: include,
 )
 
 summary(
