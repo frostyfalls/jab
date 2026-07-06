@@ -4,10 +4,9 @@ project(
   'waywallpaper',
   'c',
   version: '0.1.0',
-  default_options: [
-    'c_std=c99',
-    'warning_level=2',
-  ],
+  license: 'MIT',
+  license_files: 'LICENSE',
+  default_options: ['c_std=c99', 'warning_level=2'],
 )
 
 add_project_arguments(
@@ -17,19 +16,20 @@ add_project_arguments(
 )
 
 wayland_client = dependency('wayland-client')
-wayland_protocols = dependency('wayland-protocols').get_variable('pkgdatadir')
-wayland_scanner = find_program(dependency('wayland-scanner').get_variable('wayland_scanner'))
 pixman = dependency('pixman-1')
 libpng = dependency('libpng', required: get_option('png'))
 libjpeg = dependency('libjpeg', required: get_option('jpeg'))
 libwebp = dependency('libwebp', required: get_option('webp'))
+
+wayland_protocols = dependency('wayland-protocols').get_variable('pkgdatadir')
+wayland_scanner = find_program(dependency('wayland-scanner').get_variable('wayland_scanner'))
 
 sources = ['src/waywallpaper.c', 'src/shm.c']
 dependencies = [wayland_client, pixman]
 
 foreach protocol : [
   'external/wlr-layer-shell-unstable-v1.xml',
-  wayland_protocols + '/stable/xdg-shell/xdg-shell.xml',
+  wayland_protocols / 'stable/xdg-shell/xdg-shell.xml',
 ]
   sources += custom_target(
     protocol.underscorify() + '-client-header',
