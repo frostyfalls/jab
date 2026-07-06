@@ -6,8 +6,11 @@ A wallpaper for Wayland.
 
 * wayland
 * pixman
-* libpng (optional)
-* libjpeg-turbo (optional)
+* libpng (optional, for PNG support)
+* libjpeg-turbo (optional, for JPEG support)
+* libwebp (optional, for WEBP support)
+
+If no image formats are supported, only solid colors are available.
 
 ## Building
 

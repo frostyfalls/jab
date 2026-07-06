@@ -356,10 +356,7 @@ int main(int argc, char **argv) {
 			usage(1);
 	} OPTEND;
 
-	// TODO: don't duplicate checks?
-	if (state.display_mode != MODE_INVALID && !state.image)
-		usage(1);
-	else if (state.display_mode == MODE_INVALID && state.image)
+	if ((state.display_mode != MODE_INVALID) != !!state.image)
 		usage(1);
 
 	wl_list_init(&state.outputs);
