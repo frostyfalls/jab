@@ -1,4 +1,6 @@
-// courtesy to https://wayland-book.com/surfaces/shared-memory.html
+// SPDX-License-Identifier: MIT
+//
+// Courtesy to https://wayland-book.com/surfaces/shared-memory.html
 
 #include <errno.h>
 #include <fcntl.h>

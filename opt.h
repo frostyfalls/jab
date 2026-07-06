@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #define OPTERR \
 	usage(1)
 

@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+
 #ifndef _WAYWALLPAPER_H
 #define _WAYWALLPAPER_H
 

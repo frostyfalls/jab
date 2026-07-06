@@ -1,3 +1,5 @@
+// SPDX-License-Identifier: MIT
+//
 // TODO: do platform checks for e.g. <sys/...>
 #include <stdbool.h>
 #include <stdio.h>
