@@ -23,13 +23,6 @@ pixman = dependency('pixman-1')
 libpng = dependency('libpng', required: get_option('png'))
 libjpeg = dependency('libjpeg', required: get_option('jpeg'))
 
-if libpng.found()
-  add_project_arguments('-DWW_HAVE_PNG', language: 'c')
-endif
-if libjpeg.found()
-  add_project_arguments('-DWW_HAVE_JPEG', language: 'c')
-endif
-
 protocols_src = []
 foreach protocol : [
   'wlr-layer-shell-unstable-v1.xml',
@@ -51,9 +44,11 @@ endforeach
 
 formats_src = []
 if libpng.found()
+  add_project_arguments('-DWW_HAVE_PNG', language: 'c')
   formats_src += ['png.c']
 endif
 if libjpeg.found()
+  add_project_arguments('-DWW_HAVE_JPEG', language: 'c')
   formats_src += ['jpeg.c']
 endif
 
@@ -62,8 +57,8 @@ executable(
   [
     'waywallpaper.c',
     'shm.c',
-    formats_src,
     protocols_src,
+    formats_src,
   ],
   dependencies: [
     wayland_client,
