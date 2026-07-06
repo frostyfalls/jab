@@ -7,11 +7,14 @@
 #include <unistd.h>
 
 #include <pixman.h>
+#ifdef WW_HAVE_PNG
+#include <png.h>
+#endif  // WW_HAVE_PNG
 #include <wayland-client.h>
 #include <wlr-layer-shell-unstable-v1.h>
 
 #include "opt.h"
-#include "shm.h"
+#include "waywallpaper.h"
 
 enum display_mode {
 	MODE_INVALID = 0,  // default for solid color, otherwise error
@@ -33,6 +36,7 @@ struct state {
 	enum display_mode display_mode;  // -m option
 	bool pixel_perfect;  // -p option
 	FILE *image_file;  // -i option
+	pixman_image_t *image;
 };
 
 struct output {
@@ -181,11 +185,6 @@ static const struct wl_buffer_listener buffer_listener = {
 	.release = wl_buffer_release,
 };
 
-void unmap_image_data(pixman_image_t *image, void *data) {
-	(void)data;
-	munmap(pixman_image_get_data(image), pixman_image_get_height(image) * pixman_image_get_stride(image));
-}
-
 static pixman_image_t *create_surface_image(struct wl_shm *shm, struct wl_surface *surface, uint32_t width, uint32_t height) {
 	const uint32_t stride = width * 4;
 	const uint32_t size = height * stride;
@@ -201,8 +200,20 @@ static pixman_image_t *create_surface_image(struct wl_shm *shm, struct wl_surfac
 
 	wl_buffer_add_listener(buffer, &buffer_listener, NULL);
 	wl_surface_attach(surface, buffer, 0, 0);
+
 	pixman_image_t *image = pixman_image_create_bits_no_clear(PIXMAN_x8r8g8b8, width, height, data, stride);
-	pixman_image_set_destroy_function(image, unmap_image_data, NULL);
+	pixman_image_set_destroy_function(image, unmap_pixman_image, NULL);
+
+	return image;
+}
+
+static pixman_image_t *load_image(FILE *file) {
+	pixman_image_t *image = NULL;
+#ifdef WW_HAVE_PNG
+	if ((image = load_png(file)))
+		return image;
+#endif  // WW_HAVE_PNG
+	(void)file;
 	return image;
 }
 
@@ -210,6 +221,25 @@ int main(int argc, char **argv) {
 	struct state state = {0};
 
 	OPTBEGIN(argc, argv) {
+		case 'V':
+			fprintf(
+				stderr,
+				"waywallpaper v" WW_VERSION " ["
+#ifdef WW_HAVE_PNG
+				"+"
+#else
+				"-"
+#endif  // WW_HAVE_PNG
+				"png "
+#ifdef WW_HAVE_JPEG
+				"+"
+#else
+				"-"
+#endif  // WW_HAVE_JPEG
+				"jpeg]\n"
+			);
+			exit(EXIT_SUCCESS);
+			break;
 		case 'p':
 			state.pixel_perfect = true;
 			break;
@@ -217,16 +247,20 @@ int main(int argc, char **argv) {
 			const char *color = OPTARG;
 			uint32_t r = 0, g = 0, b = 0;
 			if (sscanf(color, "%02x%02x%02x", &r, &g, &b) != 3)
-				die("failed to parse color: %s", color);
+				die("invalid color: %s", color);
 			state.color.red = (double)r * 0xffff / 0xff;
 			state.color.green = (double)g * 0xffff / 0xff;
 			state.color.blue = (double)b * 0xffff / 0xff;
 		} break;
 		case 'i': {
+			// TODO: better error messages
 			const char *image_path = OPTARG;
 			state.image_file = fopen(image_path, "rb");
 			if (!state.image_file)
-				die("failed to open image: %s", image_path);
+				die("failed to load image: %s", image_path);
+			state.image = load_image(state.image_file);
+			if (!state.image)
+				die("failed to load image: %s", image_path);
 		} break;
 		case 'm': {
 			const char *mode = OPTARG;
@@ -241,9 +275,11 @@ int main(int argc, char **argv) {
 			else if (strcmp(mode, "tile") == 0)
 				state.display_mode = MODE_TILE;
 			else
-				die("failed to parse mode: %s", mode);
+				die("invalid mode: %s", mode);
 		} break;
 	} OPTEND;
+	if (!state.image_file)
+		usage(1);
 
 	wl_list_init(&state.outputs);
 
@@ -261,28 +297,56 @@ int main(int argc, char **argv) {
 		wl_list_for_each(output, &state.outputs, link) {
 			if (output->dirty) {
 				output->dirty = false;
-				pixman_image_t *image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
-				pixman_image_fill_rectangles(PIXMAN_OP_SRC, image, &state.color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
+				pixman_image_t *output_image = create_surface_image(output->state->shm, output->surface, output->width, output->height);
+				pixman_image_fill_rectangles(PIXMAN_OP_SRC, output_image, &state.color, 1, &(pixman_rectangle16_t){0, 0, output->width, output->height});
+				if (state.image) {
+					switch (state.display_mode) {
+						case MODE_FILL:
+						case MODE_FIT: {
+							uint32_t src_width = pixman_image_get_width(state.image), src_height = pixman_image_get_height(state.image);
+							double sx = (double)output->width / src_width;
+							double sy = (double)output->height / src_height;
+							double s = state.display_mode == MODE_FILL ? fmax(sx, sy) : fmin(sx, sy);
+							pixman_transform_t t;
+							pixman_transform_init_scale(&t, pixman_double_to_fixed(1 / s), pixman_double_to_fixed(1 / s));
+							pixman_transform_translate(&t, NULL, pixman_double_to_fixed((src_width - output->width / s) / 2), pixman_double_to_fixed((src_height - output->height / s) / 2));
+							pixman_image_set_transform(state.image, &t);
+						} break;
+						case MODE_STRETCH:
+						case MODE_CENTER:
+							break;
+						case MODE_TILE:
+							pixman_image_set_repeat(state.image, PIXMAN_REPEAT_NORMAL);
+							break;
+						case MODE_INVALID:
+							abort();  // unreachable
+					}
+					if (!state.pixel_perfect)
+						pixman_image_set_filter(state.image, PIXMAN_FILTER_BEST, NULL, 0);
+					pixman_image_composite32(PIXMAN_OP_OVER, state.image, NULL, output_image, 0, 0, 0, 0, 0, 0, output->width, output->height);
+				}
 				wl_surface_commit(output->surface);
-				pixman_image_unref(image);
+				pixman_image_unref(output_image);
 			}
 		}
 	}
 
 	// TODO: remove outputs
 
-	if (state.image_file)
-		fclose(state.image_file);
-	if (state.layer_shell)
-		zwlr_layer_shell_v1_destroy(state.layer_shell);
-	if (state.shm)
-		wl_shm_destroy(state.shm);
-	if (state.compositor)
-		wl_compositor_destroy(state.compositor);
-	if (state.registry)
-		wl_registry_destroy(state.registry);
-	if (state.display)
-		wl_display_disconnect(state.display);
+	// if (state.image)
+	// 	pixman_image_unref(state.image);
+	// if (state.image_file)
+	// 	fclose(state.image_file);
+	// if (state.layer_shell)
+	// 	zwlr_layer_shell_v1_destroy(state.layer_shell);
+	// if (state.shm)
+	// 	wl_shm_destroy(state.shm);
+	// if (state.compositor)
+	// 	wl_compositor_destroy(state.compositor);
+	// if (state.registry)
+	// 	wl_registry_destroy(state.registry);
+	// if (state.display)
+	// 	wl_display_disconnect(state.display);
 
 	return EXIT_SUCCESS;
 }

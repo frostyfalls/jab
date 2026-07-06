@@ -6,7 +6,9 @@
 #include <time.h>
 #include <unistd.h>
 
-#include "shm.h"
+#include <pixman.h>
+
+#include "waywallpaper.h"
 
 static void randname(char *buf) {
 	struct timespec ts;
@@ -46,4 +48,9 @@ int allocate_shm_file(size_t size) {
 		return -1;
 	}
 	return fd;
+}
+
+void unmap_pixman_image(pixman_image_t *image, void *data) {
+	(void)data;
+	munmap(pixman_image_get_data(image), pixman_image_get_height(image) * pixman_image_get_stride(image));
 }

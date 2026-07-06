@@ -10,6 +10,7 @@ project(
 
 add_project_arguments(
   '-D_POSIX_C_SOURCE=200809L',
+  '-DWW_VERSION="@0@"'.format(meson.project_version()),
   language: 'c',
 )
 
@@ -17,9 +18,15 @@ wayland_client = dependency('wayland-client')
 wayland_protocols = dependency('wayland-protocols').get_variable('pkgdatadir')
 wayland_scanner = find_program(dependency('wayland-scanner').get_variable('wayland_scanner'))
 pixman = dependency('pixman-1')
-# TODO: make lib{png,jpeg} optional
-# libpng = dependency('libpng')
-# libjpeg = dependency('libjpeg')
+libpng = dependency('libpng', required: get_option('png'))
+libjpeg = dependency('libjpeg', required: get_option('jpeg'))
+
+if libpng.found()
+  add_project_arguments('-DWW_HAVE_PNG', language: 'c')
+endif
+if libjpeg.found()
+  add_project_arguments('-DWW_HAVE_JPEG', language: 'c')
+endif
 
 protocols_src = []
 foreach protocol : [
@@ -40,17 +47,34 @@ foreach protocol : [
   )
 endforeach
 
+formats_src = []
+if libpng.found()
+  formats_src += ['png.c']
+endif
+if libjpeg.found()
+  formats_src += ['jpeg.c']
+endif
+
 executable(
   'waywallpaper',
   [
     'waywallpaper.c',
     'shm.c',
+    formats_src,
     protocols_src,
   ],
   dependencies: [
     wayland_client,
     pixman,
-    # libpng,
-    # libjpeg,
+    libpng,
+    libjpeg,
   ],
+)
+
+summary(
+  {
+    'PNG support': libpng.found(),
+    'JPEG support': libjpeg.found(),
+  },
+  bool_yn: true,
 )

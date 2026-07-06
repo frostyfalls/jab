@@ -1,0 +1,2 @@
+option('png', type: 'feature')
+option('jpeg', type: 'feature')
