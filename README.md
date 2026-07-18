@@ -1,13 +1,14 @@
 # waywallpaper
 
-A wallpaper for Wayland.
+A wallpaper for Wayland compositors supporting wlr-layer-shell-v1. Written with
+minimal dependencies in mind.
 
 ## Dependencies
 
 * wayland
 * pixman
 * libpng (optional, for PNG support)
-* libjpeg-turbo (optional, for JPEG support)
+* libjpeg (optional, for JPEG support)
 * libwebp (optional, for WEBP support)
 
 If no image formats are supported, only solid colors are available.
@@ -21,3 +22,7 @@ build directory and configure the list of supported formats.
 muon setup [-Dpng=disabled] [-Djpeg=disabled] [-Dwebp=disabled] build
 samu -C build
 ```
+
+## License
+
+waywallpaper is under the MIT license; see LICENSE for more information.

@@ -20,7 +20,6 @@ pixman = dependency('pixman-1')
 libpng = dependency('libpng', required: get_option('png'))
 libjpeg = dependency('libjpeg', required: get_option('jpeg'))
 libwebp = dependency('libwebp', required: get_option('webp'))
-
 wayland_protocols = dependency('wayland-protocols').get_variable('pkgdatadir')
 wayland_scanner = find_program(dependency('wayland-scanner').get_variable('wayland_scanner'))
 
